@@ -1,4 +1,4 @@
-use httpserver::ThreadPool;
+use static_serve::ThreadPool;
 use std::fs;
 use std::io::prelude::*;
 use std::net::TcpListener;
@@ -7,12 +7,14 @@ use std::str;
 use std::env::args;
 
 fn main() {
+    // Defaults
     let mut temp_ipv4addr: String = String::from("127.0.0.1:8080");
     let mut temp_rootpath: String = String::from(".");
     let mut temp_indexfile: String = String::from("index.html");
     let mut temp_error404file: String = String::from("");
     let mut temp_poolsize: usize = 1;
     
+    // CLI argument handling
     let mut args = args().skip(1);
     while let Some(arg) = args.next() {
         match &arg[..] {
@@ -72,13 +74,14 @@ fn main() {
         }
     }
 
+    // Get final state
     let ipv4addr: &str = Box::leak(Box::new(temp_ipv4addr));
     let rootpath: &str = Box::leak(Box::new(temp_rootpath));
     let indexfile: &str = Box::leak(Box::new(temp_indexfile));
     let error404file: &str = Box::leak(Box::new(temp_error404file));
     let poolsize = temp_poolsize;
 
-    
+    // 404 file and directory validation
     if error404file != ""{
         if entrycheck(&rootpath, &error404file) {
             println!("you need a valid 404 file");
@@ -86,20 +89,23 @@ fn main() {
         }
     }
 
+    // Bind to address
     let listener = TcpListener::bind(ipv4addr).unwrap();
+    // Create a thread pool
     let pool = ThreadPool::new(poolsize);
     
-    // for stream in listener.incoming().take(2) {
+    // Main server loop
     for stream in listener.incoming() {
         let stream = stream.unwrap();
+        // Dispatch thread to handle connection
         pool.execute(|| {
             handle_connection(stream, rootpath, indexfile, error404file);
         });
     }
-
-    println!("{}{}{}", rootpath, indexfile, error404file);
 }
 
+// This function checks if the request is a GET request and waits for handle_get_request()
+// to return the response. Then writes the response bytes to the stream and closes it.
 fn handle_connection(mut stream: TcpStream, rootpath: &str, indexfile: &str, error404file: &str) {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).unwrap();
@@ -112,10 +118,11 @@ fn handle_connection(mut stream: TcpStream, rootpath: &str, indexfile: &str, err
     }
 }
 
+// This function does all the file handling and status code determination
+// If the file can't be read, it attempts to return the contents of the 404 file instead.
+// If there is no 404 file, this is skipped 
 fn handle_get_request(buffer: [u8; 1024], rootpath: &str, indexfile: &str, error404file: &str) -> Vec<u8> {
     let uri = get_uri(buffer, indexfile);
-
-    // println!("{}{}", ROOTPATH, uri);
 
     let found;
     let mut contents = match fs::read(format!("{}{}", rootpath, uri)) {
@@ -128,38 +135,54 @@ fn handle_get_request(buffer: [u8; 1024], rootpath: &str, indexfile: &str, error
             "".as_bytes().to_vec()
         },
     };
-    
-    if contents == "".as_bytes().to_vec() {
-        contents = match fs::read(format!("{}/{}", rootpath, error404file)) {
-            Ok(file) => file,
-            Err(_) => "".as_bytes().to_vec(),
-        };
-        
+
+    // Ignore if there is no 404 file
+    if error404file != "" {
+        // If the file contents are empty, replace them with the 404 file
+        // If the 404 file fails to read, the file contents remain empty
+        if contents == "".as_bytes().to_vec() {
+            contents = match fs::read(format!("{}/{}", rootpath, error404file)) {
+                Ok(file) => file,
+                Err(_) => "".as_bytes().to_vec(),
+            };
+            
+        }
     }
+    
+    // Get the proper status line
     let status_line = format!("HTTP/1.1 {}",found);
 
+    // Format properly for a HTTP/1.1 response
     let response = format!(
         "{}\r\nContent-Length: {}\r\n\r\n",
         status_line,
         contents.len()
     );
-    let responsebytes = [response.as_bytes(), &contents].concat();
 
+    // Concatenate the response and file contents and return them as bytes
+    let responsebytes = [response.as_bytes(), &contents].concat();
     return responsebytes;
 }
 
+// This function reads the request buffer into a uri and appends the index file
+// if the uri ends with a '/' character, which signifies a directory.
 fn get_uri(buffer: [u8; 1024], indexfile: &str) -> String {
     let mut requesteduri = [0; 256];
     let mut readuri: bool = false;
     let mut urireads: usize = 0;
     for i in 0..256{
+        // 32 here is a whitespace character.
+        // This means that if a whitespace is encountered
+        // for the first time, we start reading the buffer
+        // to ultimately get the whole uri.
+        // We stop reading and break out of the loop once
+        // we hit a second whitespace 
         if buffer[i] == 32 {
             if readuri {
                 break;
-            } else {
-                readuri =  true;
-                continue;
             }
+            readuri = true;
+            continue;
         }
         
         if readuri {
@@ -168,6 +191,7 @@ fn get_uri(buffer: [u8; 1024], indexfile: &str) -> String {
         }
     }
 
+    // Make the u8 array into a &str
     let filename = match str::from_utf8(&requesteduri){
         Ok(v) => v.trim_matches(char::from(0)),
         Err(_) => "",
@@ -179,10 +203,12 @@ fn get_uri(buffer: [u8; 1024], indexfile: &str) -> String {
     } else {
         finalfileuri = filename.to_string();
     }
-    // println!("{}",finalfileuri);
     return finalfileuri;
 }
 
+// Takes in a path and file 
+// Returns true if it fails to read a file of the resulting URI
+// Returns false if it succeeds
 fn entrycheck(path: &str, file: &str) -> bool{
     let _contents = match fs::read(format!("{}/{}", path, file)) {
         Ok(_file) => return false,
@@ -190,6 +216,7 @@ fn entrycheck(path: &str, file: &str) -> bool{
     };
 }
 
+// Prints general help
 fn printhelp() {
     print!("Usage: binary [OPTIONS]
 Start a HTTP/1.1 server bound to a specified IPv4 address and serve
@@ -222,6 +249,8 @@ Options:
 ");
     
 }
+
+// Prints examples
 fn printusagehelp() {
 print!("The following is a small guide to option usage with examples
 
